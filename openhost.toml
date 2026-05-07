@@ -1,0 +1,64 @@
+[app]
+name = "tasks-md"
+version = "0.1.0"
+description = "Tasks.md — markdown-file-based task management board (Kanban). The zone owner is auto-authenticated via the OpenHost router; the app itself has no per-user authentication. Tasks are plain Markdown files on disk that LLM agents can read and write directly."
+
+[runtime.container]
+# Container port 8090 is the auth-proxy sidecar.  It listens
+# here and reverse-proxies SSO-gated traffic to upstream
+# Tasks.md on 127.0.0.1:8080.  This is the port the OpenHost
+# router routes browser traffic to (via the canonical
+# subdomain tasks-md.<zone-domain>; path-prefixed
+# <zone-domain>/tasks-md/ also works but the dashboard links
+# the subdomain).
+#
+# Auth model: Tasks.md has no application-level authentication
+# of its own.  The auth-proxy gates every request on the
+# router-stamped X-OpenHost-Is-Owner: true header — same
+# pattern as openhost-syncthing's "any owner is admin, all
+# others 403".  Since public_paths=[] the router rejects
+# anonymous traffic before it reaches us, so by the time we
+# see a request the visitor has been JWT-verified by the
+# router upstream.
+#
+# This is the simplest of the OpenHost auth patterns — no
+# cookie set, no session minted, no app-side login dance.
+# It works for Tasks.md because the app has nothing to log
+# IN to: it just reads/writes markdown files in a directory
+# and the proxy is the only authentication.
+image = "Dockerfile"
+port = 8090
+
+[routing]
+# Tasks.md doesn't expose a dedicated health endpoint; "/" is
+# the SPA which returns 200 with the HTML shell.  The
+# OpenHost router will treat the app as ready as soon as the
+# auth-proxy starts, which is sub-second after container
+# start.
+health_check = "/"
+# Every path is private to the zone owner.  The router 302's
+# anonymous traffic to the zone /login page; the auth-proxy
+# enforces it again locally as defence in depth.
+public_paths = []
+
+[resources]
+# Tasks.md's RSS at idle is ~50 MiB (single Node.js server
+# serving a SolidJS SPA + a small REST API for filesystem
+# CRUD).  Add the auth-proxy sidecar (~25 MiB).  256 MiB
+# is comfortable headroom for occasional spikes on bulk
+# imports or many concurrent edits.
+memory_mb = 256
+# IO-bound (fs reads/writes per request).  250m is plenty
+# for personal-scale single-owner usage.
+cpu_millicores = 250
+
+[data]
+# Persistent: the markdown task files (under
+# OPENHOST_APP_DATA_DIR/tasks) and the per-deployment app
+# config (themes, images, sort order — under
+# OPENHOST_APP_DATA_DIR/config).  Operators can also browse
+# / edit the markdown files directly from the host filesystem
+# under the persistent app_data dir, which makes it easy for
+# an LLM agent on the same host to write task progress as
+# files without going through the SPA / REST API at all.
+app_data = true

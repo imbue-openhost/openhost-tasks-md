@@ -64,56 +64,38 @@ if [[ ! -L /config ]]; then
 fi
 
 # -----------------------------------------------------------------
-# Run upstream entrypoint setup steps
+# Initialise config dir
 # -----------------------------------------------------------------
 #
-# The upstream entrypoint.sh does three things:
-#   * Initialise the config dir (custom.css, color themes).
-#   * Build the SPA bundle (npm run build) into /api/static.
-#   * chown -R the dirs to PUID:PGID if those env vars are set.
-#   * exec node server.
-#
-# We replay the first three in-line (without exec'ing the node
-# server, which we want to run in the background instead),
-# then run node server ourselves so we can multiplex it with
-# the auth-proxy.
+# The SPA is pre-built in our Dockerfile (stage 2) so we skip
+# the upstream entrypoint's `npm run build` step entirely.
+# That saves ~30 s on cold start and several hundred MiB of
+# peak build memory.  We still need to (a) ensure the config
+# directory exists with the upstream's expected layout, and
+# (b) sync the persistent stylesheets/ subdirectory with
+# /api/static/stylesheets/ so the SPA can serve the operator's
+# custom CSS overrides.
 
 mkdir -p "$CONFIG_DIR/stylesheets" "$CONFIG_DIR/images" "$CONFIG_DIR/sort"
 
 # Initialise default custom.css if missing.  The upstream
-# code path imports the adwaita theme by default, mirroring
-# the upstream entrypoint.
+# code path imports the adwaita theme by default; we replicate
+# that here so a fresh deployment shows the operator the same
+# default appearance as a stock Tasks.md install.
 if [[ ! -f "$CONFIG_DIR/stylesheets/custom.css" ]]; then
-    BASE_PATH="${BASE_PATH:-}"
-    echo "@import url(${BASE_PATH}/stylesheets/color-themes/adwaita.css)" \
+    echo "@import url(/stylesheets/color-themes/adwaita.css)" \
         > "$CONFIG_DIR/stylesheets/custom.css"
 fi
 
-# Build the SPA.  Tasks.md's frontend is a SolidJS app that
-# needs to be re-built whenever BASE_PATH changes (the path
-# is baked into the bundle).  We rebuild on every container
-# start to handle BASE_PATH changes cleanly; the bundle build
-# takes ~10 s.
-cd /app
-if [[ -n "${BASE_PATH:-}" ]]; then
-    npm run build -- --base="${BASE_PATH}/"
-else
-    npm run build -- --base="/"
-fi
-rm -f dist/stylesheets/custom.css
-rm -rf /api/static
-mv dist /api/static
-
-# Update CSS imports in the persisted custom.css to use the
-# current BASE_PATH.  Same gsub as upstream entrypoint.
-awk -v BP="${BASE_PATH:-}" \
-    '{gsub("@import url\\(.*/stylesheets/color-themes/", "@import url(" BP "/stylesheets/color-themes/")}1' \
-    "$CONFIG_DIR/stylesheets/custom.css" > /tmp/custom.css
-mv /tmp/custom.css "$CONFIG_DIR/stylesheets/custom.css"
-
-cd /api
-cp -r "$CONFIG_DIR/stylesheets/." ./static/stylesheets/
-cp -r ./static/stylesheets/. "$CONFIG_DIR/stylesheets/"
+# Sync stylesheets/ both directions: pre-built /api/static
+# carries the bundled themes (adwaita, nord, catppuccin) and
+# the persistent dir carries the operator's custom.css.
+# Tasks.md serves both from /api/static/stylesheets, so we
+# copy the bundled themes INTO the persistent dir (so the
+# operator can edit them) and copy the operator's custom.css
+# INTO /api/static (so the runtime serves it).
+cp -r /api/static/stylesheets/. "$CONFIG_DIR/stylesheets/" 2>/dev/null || true
+cp -r "$CONFIG_DIR/stylesheets/." /api/static/stylesheets/
 
 # -----------------------------------------------------------------
 # Launch Tasks.md

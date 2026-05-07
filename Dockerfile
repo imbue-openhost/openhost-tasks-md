@@ -30,14 +30,27 @@
 # The upstream image is published to docker.io/baldissaramatheus/tasks.md.
 FROM docker.io/baldissaramatheus/tasks.md:3.3.0 AS tasksmd-source
 
-# Stage 2: build the runtime image.
+# Stage 2: pre-build the SPA so we don't have to rebuild at
+# runtime (the upstream image rebuilds on every start, which
+# peaks at ~600 MiB and gets OOM-killed under tight memory
+# budgets).  The trade is that BASE_PATH is baked at build
+# time — we set it to "/" because OpenHost routes apps via
+# subdomain, and on the path-prefix fallback the SPA still
+# works because all asset URLs are absolute from "/".
 #
-# We need (a) the Tasks.md app (Node.js + the prebuilt SPA),
-# and (b) Python 3 + bash for the auth-proxy.  Tasks.md's
-# upstream image is alpine-based; alpine has Python 3 in the
-# main repo.  Layering on top of the upstream image directly
-# is cleaner than rebuilding from scratch — we get the
-# pre-built SPA + npm install for free.
+# We use a separate node:18-alpine stage rather than running
+# the build inside the runtime image, so the runtime image
+# doesn't carry npm + the Vite/Rollup build dependencies.
+FROM docker.io/baldissaramatheus/tasks.md:3.3.0 AS spa-build
+USER root
+WORKDIR /app
+RUN npm run build -- --base="/" \
+ && rm -f dist/stylesheets/custom.css
+
+# Stage 3: build the runtime image.
+#
+# Layer on top of the upstream image, then graft in the
+# pre-built SPA from stage 2 and our auth-proxy.
 FROM docker.io/baldissaramatheus/tasks.md:3.3.0
 
 # -- Python + bash for the auth-proxy + start.sh ----------------
@@ -49,6 +62,15 @@ FROM docker.io/baldissaramatheus/tasks.md:3.3.0
 # way to multiplex two children with cooperative shutdown.
 USER root
 RUN apk add --no-cache python3 bash
+
+# -- pre-built SPA -----------------------------------------------
+#
+# Copy the Vite-built bundle from stage 2 into /api/static
+# (the location the upstream Node.js server serves from).  At
+# runtime our start.sh skips the upstream rebuild, saving
+# ~30 s of cold-start time and several hundred MiB of build
+# memory.
+COPY --from=spa-build /app/dist /api/static
 
 # -- auth-proxy + start.sh -------------------------------------
 #

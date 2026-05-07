@@ -42,11 +42,16 @@ health_check = "/"
 public_paths = []
 
 [resources]
-# Tasks.md's RSS at idle is ~50 MiB (single Node.js server
-# serving a SolidJS SPA + a small REST API for filesystem
-# CRUD).  Add the auth-proxy sidecar (~25 MiB).  256 MiB
-# is comfortable headroom for occasional spikes on bulk
-# imports or many concurrent edits.
+# Tasks.md's runtime RSS is ~50 MiB (Node.js + small SPA-
+# serving + filesystem CRUD).  Add the auth-proxy sidecar
+# (~25 MiB).  256 MiB is comfortable headroom for occasional
+# spikes on bulk imports or many concurrent edits.
+#
+# We pre-build the SPA in our Dockerfile (stage 2) rather
+# than rebuilding it at every container start the way the
+# upstream image does, so this footprint reflects steady-
+# state operation only — there's no transient build-time
+# peak that would otherwise demand ~700 MiB.
 memory_mb = 256
 # IO-bound (fs reads/writes per request).  250m is plenty
 # for personal-scale single-owner usage.
